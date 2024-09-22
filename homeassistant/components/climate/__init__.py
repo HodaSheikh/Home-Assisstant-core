@@ -37,6 +37,7 @@ from homeassistant.helpers.entity_platform import EntityPlatform
 from homeassistant.helpers.temperature import display_temp as show_temp
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_issue_tracker, async_suggest_report_issue
+from homeassistant.util.hass_dict import HassKey
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (  # noqa: F401
@@ -86,6 +87,7 @@ from .const import (  # noqa: F401
     FAN_ON,
     FAN_TOP,
     HVAC_MODES,
+    INTENT_GET_TEMPERATURE,
     PRESET_ACTIVITY,
     PRESET_AWAY,
     PRESET_BOOST,
@@ -113,6 +115,7 @@ from .const import (  # noqa: F401
 
 _LOGGER = logging.getLogger(__name__)
 
+DOMAIN_DATA: HassKey[EntityComponent[ClimateEntity]] = HassKey(DOMAIN)
 ENTITY_ID_FORMAT = DOMAIN + ".{}"
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA
 PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE
@@ -149,7 +152,7 @@ SET_TEMPERATURE_SCHEMA = vol.All(
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up climate entities."""
-    component = hass.data[DOMAIN] = EntityComponent[ClimateEntity](
+    component = hass.data[DOMAIN_DATA] = EntityComponent[ClimateEntity](
         _LOGGER, DOMAIN, hass, SCAN_INTERVAL
     )
     await component.async_setup(config)
@@ -201,7 +204,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     component.async_register_entity_service(
         SERVICE_SET_HUMIDITY,
         {vol.Required(ATTR_HUMIDITY): vol.Coerce(int)},
-        "async_set_humidity",
+        async_service_humidity_set,
         [ClimateEntityFeature.TARGET_HUMIDITY],
     )
     component.async_register_entity_service(
@@ -222,14 +225,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
-    component: EntityComponent[ClimateEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    return await hass.data[DOMAIN_DATA].async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent[ClimateEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
+    return await hass.data[DOMAIN_DATA].async_unload_entry(entry)
 
 
 class ClimateEntityDescription(EntityDescription, frozen_or_thawed=True):
@@ -927,6 +928,33 @@ async def async_service_aux_heat(
         await entity.async_turn_aux_heat_on()
     else:
         await entity.async_turn_aux_heat_off()
+
+
+async def async_service_humidity_set(
+    entity: ClimateEntity, service_call: ServiceCall
+) -> None:
+    """Handle set humidity service."""
+    humidity = service_call.data[ATTR_HUMIDITY]
+    min_humidity = entity.min_humidity
+    max_humidity = entity.max_humidity
+    _LOGGER.debug(
+        "Check valid humidity %d in range %d - %d",
+        humidity,
+        min_humidity,
+        max_humidity,
+    )
+    if humidity < min_humidity or humidity > max_humidity:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="humidity_out_of_range",
+            translation_placeholders={
+                "humidity": str(humidity),
+                "min_humidity": str(min_humidity),
+                "max_humidity": str(max_humidity),
+            },
+        )
+
+    await entity.async_set_humidity(humidity)
 
 
 async def async_service_temperature_set(
